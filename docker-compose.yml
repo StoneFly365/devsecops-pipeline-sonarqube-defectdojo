@@ -1,0 +1,119 @@
+version: "3.8"
+
+networks:
+  devsecops:
+    driver: bridge
+
+volumes:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:
+  sonarqube_bundled-plugins:
+  postgresql_data:
+  defectdojo_data:
+  defectdojo_media:
+
+services:
+
+  # ─────────────────────────────────────────
+  # PostgreSQL – base de datos compartida
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    networks: [devsecops]
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar
+      POSTGRES_DB: sonarqube
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+      - ./config/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────
+  # SonarQube LTS Community
+  # ─────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [devsecops]
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_bundled-plugins:/opt/sonarqube/lib/bundled-plugins
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # ─────────────────────────────────────────
+  # DefectDojo
+  # ─────────────────────────────────────────
+  defectdojo:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [devsecops]
+    ports:
+      - "8080:8080"
+    environment:
+      DD_DATABASE_URL: postgresql://sonar:sonar@postgres:5432/defectdojo
+      DD_SECRET_KEY: "change-me-in-production-use-a-long-random-string"
+      DD_CREDENTIAL_AES_256_KEY: "change-me-in-production-use-32ch"
+      DD_ALLOWED_HOSTS: "*"
+      DD_ADMIN_USER: admin
+      DD_ADMIN_PASSWORD: admin
+      DD_ADMIN_MAIL: admin@devsecops.local
+      DD_INITIALIZE: "true"
+      DD_TRACK_MIGRATIONS: "true"
+    volumes:
+      - defectdojo_data:/app/dojo/static
+      - defectdojo_media:/app/media
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/v2/ | grep -q 'api'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  # ─────────────────────────────────────────
+  # sonar-scanner (ejecuta el análisis)
+  # ─────────────────────────────────────────
+  sonar-scanner:
+    image: sonarsource/sonar-scanner-cli:latest
+    container_name: sonar-scanner
+    depends_on:
+      sonarqube:
+        condition: service_healthy
+    networks: [devsecops]
+    volumes:
+      - ./webgoat:/usr/src          # código fuente clonado localmente
+      - ./config/sonar-project.properties:/usr/src/sonar-project.properties
+    environment:
+      SONAR_HOST_URL: http://sonarqube:9000
+      SONAR_TOKEN: ${SONAR_TOKEN}
+    profiles: ["scan"]              # se lanza solo con: docker compose --profile scan up sonar-scanner

@@ -1,0 +1,287 @@
+name: DevSecOps – SonarQube + DefectDojo
+
+on:
+  push:
+    branches: [main, develop, "release/**"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Secrets requeridos en el repositorio (Settings → Secrets → Actions):
+#   SONAR_HOST_URL   → ej. https://tu-sonarqube.ejemplo.com
+#   SONAR_TOKEN      → Token de proyecto generado en SonarQube
+#   DOJO_URL         → ej. https://tu-defectdojo.ejemplo.com
+#   DOJO_API_KEY     → API Key de DefectDojo (User → API v2 Key)
+# ──────────────────────────────────────────────────────────────────────────────
+
+env:
+  PROJECT_KEY: webgoat
+  JAVA_VERSION: "17"
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. Build + Test + Cobertura
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test (WebGoat)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout WebGoat
+        uses: actions/checkout@v4
+        with:
+          repository: WebGoat/WebGoat
+          ref: main
+          path: webgoat
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('webgoat/**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Build and run tests with coverage
+        working-directory: webgoat
+        run: |
+          mvn -B verify \
+            -Pcoverage \
+            -DskipITs \
+            --no-transfer-progress
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: webgoat/**/target/surefire-reports/*.xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage
+          path: webgoat/**/target/site/jacoco/jacoco.xml
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: webgoat/target/
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. Análisis SonarQube
+  # ─────────────────────────────────────────────────────────────────────────
+  sonarqube-analysis:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: Checkout WebGoat
+        uses: actions/checkout@v4
+        with:
+          repository: WebGoat/WebGoat
+          ref: main
+          path: webgoat
+          fetch-depth: 0   # necesario para análisis de ramas
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: webgoat/target/
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: jacoco-coverage
+          path: webgoat/
+
+      - name: Run SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        with:
+          projectBaseDir: webgoat
+          args: >
+            -Dsonar.projectKey=${{ env.PROJECT_KEY }}
+            -Dsonar.projectName=WebGoat – Security Training App
+            -Dsonar.sources=src/main/java
+            -Dsonar.tests=src/test/java
+            -Dsonar.java.binaries=target/classes
+            -Dsonar.coverage.jacoco.xmlReportPaths=**/target/site/jacoco/jacoco.xml
+            -Dsonar.exclusions=**/target/**,**/*.xml,**/*.html,**/static/**
+            -Dsonar.qualitygate.wait=true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Download SonarQube Report (issues JSON)
+        if: always()
+        run: |
+          curl -sf \
+            -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${{ secrets.SONAR_HOST_URL }}/api/issues/search?componentKeys=${{ env.PROJECT_KEY }}&ps=500&statuses=OPEN,REOPENED" \
+            -o sonar-issues.json
+        continue-on-error: true
+
+      - name: Upload SonarQube report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-issues
+          path: sonar-issues.json
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. Importar en DefectDojo
+  # ─────────────────────────────────────────────────────────────────────────
+  defectdojo-import:
+    name: Import to DefectDojo
+    runs-on: ubuntu-latest
+    needs: sonarqube-analysis
+    if: always()  # Importar aunque el QG falle
+
+    steps:
+      - name: Download SonarQube issues
+        uses: actions/download-artifact@v4
+        with:
+          name: sonar-issues
+          path: .
+
+      - name: Get Quality Gate status
+        id: qg_status
+        run: |
+          QG=$(curl -sf \
+            -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=${{ env.PROJECT_KEY }}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['projectStatus']['status'])")
+          echo "status=${QG}" >> $GITHUB_OUTPUT
+          echo "Quality Gate: ${QG}"
+
+      - name: Create/Get DefectDojo Product
+        id: dojo_product
+        run: |
+          # Buscar producto
+          RESP=$(curl -sf \
+            -H "Authorization: Token ${{ secrets.DOJO_API_KEY }}" \
+            "${{ secrets.DOJO_URL }}/api/v2/products/?name=WebGoat")
+
+          PRODUCT_ID=$(echo "$RESP" | python3 -c "
+          import sys,json
+          d=json.load(sys.stdin)
+          r=d.get('results',[])
+          print(r[0]['id'] if r else '')
+          ")
+
+          if [[ -z "$PRODUCT_ID" ]]; then
+            PRODUCT_ID=$(curl -sf -X POST \
+              -H "Authorization: Token ${{ secrets.DOJO_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              "${{ secrets.DOJO_URL }}/api/v2/products/" \
+              -d '{"name":"WebGoat","description":"OWASP WebGoat – Security Training App","prod_type":1}' \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          fi
+
+          echo "product_id=${PRODUCT_ID}" >> $GITHUB_OUTPUT
+          echo "Producto id=${PRODUCT_ID}"
+
+      - name: Create DefectDojo Engagement
+        id: dojo_engagement
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+          BRANCH="${{ github.ref_name }}"
+          ENG_ID=$(curl -sf -X POST \
+            -H "Authorization: Token ${{ secrets.DOJO_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.DOJO_URL }}/api/v2/engagements/" \
+            -d "{
+              \"name\": \"SonarQube-${TODAY}-${BRANCH}\",
+              \"product\": ${{ steps.dojo_product.outputs.product_id }},
+              \"target_start\": \"${TODAY}\",
+              \"target_end\": \"${TODAY}\",
+              \"status\": \"In Progress\",
+              \"engagement_type\": \"CI/CD\",
+              \"description\": \"GitHub Actions | Branch: ${BRANCH} | Commit: ${{ github.sha }} | QG: ${{ steps.qg_status.outputs.status }}\"
+            }" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          echo "engagement_id=${ENG_ID}" >> $GITHUB_OUTPUT
+          echo "Engagement id=${ENG_ID}"
+
+      - name: Import SonarQube scan to DefectDojo
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Token ${{ secrets.DOJO_API_KEY }}" \
+            -F "scan_type=SonarQube Scan" \
+            -F "engagement=${{ steps.dojo_engagement.outputs.engagement_id }}" \
+            -F "file=@sonar-issues.json;type=application/json" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=true" \
+            "${{ secrets.DOJO_URL }}/api/v2/import-scan/"
+          echo "✅ Importación completada."
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const qg = '${{ steps.qg_status.outputs.status }}';
+            const icon = qg === 'OK' ? '✅' : '❌';
+            const sonarUrl = '${{ secrets.SONAR_HOST_URL }}';
+            const dojoUrl = '${{ secrets.DOJO_URL }}';
+            const engId = '${{ steps.dojo_engagement.outputs.engagement_id }}';
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ${icon} DevSecOps Analysis – WebGoat
+
+            | | Resultado |
+            |---|---|
+            | **Quality Gate** | \`${qg}\` |
+            | **SonarQube** | [Ver análisis](${sonarUrl}/dashboard?id=webgoat) |
+            | **DefectDojo** | [Ver findings](${dojoUrl}/engagement/${engId}) |
+
+            > Commit: \`${{ github.sha }}\` | Branch: \`${{ github.ref_name }}\``
+            });
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4. Fallo si el Quality Gate no pasa (en push a main)
+  # ─────────────────────────────────────────────────────────────────────────
+  quality-gate-check:
+    name: Quality Gate Enforcement
+    runs-on: ubuntu-latest
+    needs: [sonarqube-analysis, defectdojo-import]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Check Quality Gate
+        run: |
+          QG=$(curl -sf \
+            -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=webgoat" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['projectStatus']['status'])")
+
+          echo "Quality Gate status: ${QG}"
+
+          if [[ "$QG" != "OK" ]]; then
+            echo "❌ El Quality Gate NO ha pasado. Revisa los issues en SonarQube y DefectDojo."
+            exit 1
+          fi
+
+          echo "✅ Quality Gate superado. El código cumple con los estándares de calidad."

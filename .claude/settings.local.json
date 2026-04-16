@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose logs *)",
+      "Bash(curl *)",
+      "Bash(docker compose *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(grep -oP '\"message\":\"[^\"]{0,100}\"')",
+      "Bash(rmdir \"config/init-postgres.sql\")",
+      "Bash(rmdir \"config/sonar-project.properties\")",
+      "Bash(rmdir \"webgoat/sonar-project.properties\")",
+      "Bash(mv init-postgres.sql config/)",
+      "Bash(mv sonar-project.properties config/)",
+      "Bash(mv \"upload-to-defectdojo.sh\" scripts/)",
+      "Bash(mkdir -p docs)",
+      "Bash(mv \"resultados-analisis-sonarqube-WebGoat .md\" \"docs/resultados-analisis-sonarqube-WebGoat.md\")"
+    ]
+  }
+}
