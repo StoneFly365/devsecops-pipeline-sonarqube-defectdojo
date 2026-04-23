@@ -13,7 +13,9 @@
       "Bash(mv sonar-project.properties config/)",
       "Bash(mv \"upload-to-defectdojo.sh\" scripts/)",
       "Bash(mkdir -p docs)",
-      "Bash(mv \"resultados-analisis-sonarqube-WebGoat .md\" \"docs/resultados-analisis-sonarqube-WebGoat.md\")"
+      "Bash(mv \"resultados-analisis-sonarqube-WebGoat .md\" \"docs/resultados-analisis-sonarqube-WebGoat.md\")",
+      "Bash(mkdir -p \"C:/Users/raul.molina/Documents/3. workspace/sonar/config/initdb\")",
+      "Bash(cp \"C:/Users/raul.molina/Documents/3. workspace/sonar/config/init-postgres.sql\" \"C:/Users/raul.molina/Documents/3. workspace/sonar/config/initdb/init.sql\")"
     ]
   }
 }

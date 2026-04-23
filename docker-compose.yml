@@ -28,7 +28,7 @@ services:
       POSTGRES_DB: sonarqube
     volumes:
       - postgresql_data:/var/lib/postgresql/data
-      - ./config/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./config/initdb:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sonar"]
       interval: 10s
@@ -39,7 +39,7 @@ services:
   # SonarQube LTS Community
   # ─────────────────────────────────────────
   sonarqube:
-    image: sonarqube:lts-community
+    image: sonarqube:community
     container_name: sonarqube
     depends_on:
       postgres:

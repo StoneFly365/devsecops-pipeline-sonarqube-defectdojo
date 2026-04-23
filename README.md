@@ -205,7 +205,8 @@ devsecops-pipeline/
 ├── devsecops-pipeline.yml          # GitHub Actions workflow
 ├── config/
 │   ├── sonar-project.properties    # Configuración del proyecto WebGoat
-│   └── init-postgres.sql           # Crea las bases de datos
+│   └── initdb/
+│       └── init.sql                # Crea las bases de datos (montado como directorio)
 ├── docs/
 │   └── resultados-analisis-sonarqube-WebGoat.md  # Informe de análisis
 ├── scripts/
